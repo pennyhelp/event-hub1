@@ -21,6 +21,7 @@ export type Database = {
           items: Json
           receipt_number: string
           stall_id: string
+          status: string
           subtotal: number
           total: number
         }
@@ -30,6 +31,7 @@ export type Database = {
           items?: Json
           receipt_number: string
           stall_id: string
+          status?: string
           subtotal: number
           total: number
         }
@@ -39,6 +41,7 @@ export type Database = {
           items?: Json
           receipt_number?: string
           stall_id?: string
+          status?: string
           subtotal?: number
           total?: number
         }

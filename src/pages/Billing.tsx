@@ -10,12 +10,13 @@ import {
   Plus, 
   Trash2,
   Printer,
-  CreditCard,
   UserPlus,
-  Briefcase,
-  Loader2
+  Loader2,
+  Check,
+  ChevronDown,
+  X
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -37,6 +38,8 @@ export default function Billing() {
   const queryClient = useQueryClient();
   const [selectedStalls, setSelectedStalls] = useState<string[]>([]);
   const [billItems, setBillItems] = useState<BillItem[]>([]);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   
   const [registration, setRegistration] = useState({
     type: "stall_counter" as Enums<"registration_type">,
@@ -45,6 +48,17 @@ export default function Billing() {
     mobile: "",
     amount: ""
   });
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Fetch stalls
   const { data: stalls = [] } = useQuery({
@@ -110,7 +124,8 @@ export default function Billing() {
           items: JSON.parse(JSON.stringify(bill.items)),
           subtotal: bill.subtotal,
           total: bill.total,
-          receipt_number: receiptNumber
+          receipt_number: receiptNumber,
+          status: 'pending'
         })
         .select()
         .single();
@@ -125,6 +140,27 @@ export default function Billing() {
     },
     onError: (error) => {
       toast.error("Failed to generate bill: " + error.message);
+    }
+  });
+
+  // Mark bill as paid mutation
+  const markPaidMutation = useMutation({
+    mutationFn: async (billId: string) => {
+      const { data, error } = await supabase
+        .from('billing_transactions')
+        .update({ status: 'paid' })
+        .eq('id', billId)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['billing_transactions'] });
+      toast.success("Payment received!");
+    },
+    onError: (error) => {
+      toast.error("Failed to update status: " + error.message);
     }
   });
 
@@ -169,6 +205,10 @@ export default function Billing() {
     );
   };
 
+  const removeStall = (stallId: string) => {
+    setSelectedStalls(prev => prev.filter(id => id !== stallId));
+  };
+
   const addItemToBill = (product: Product) => {
     const existingItem = billItems.find(item => item.id === product.id);
     if (existingItem) {
@@ -209,7 +249,6 @@ export default function Billing() {
     }
     
     const total = calculateTotal();
-    // Use first selected stall as primary (for multi-counter, items track their stall)
     createBillMutation.mutate({
       stall_id: selectedStalls[0],
       items: billItems,
@@ -245,6 +284,14 @@ export default function Billing() {
     }
   };
 
+  // Filter bills by status
+  const pendingBills = bills.filter((bill: any) => bill.status === 'pending');
+  const paidBills = bills.filter((bill: any) => bill.status === 'paid');
+  
+  // Calculate total collected (only paid bills)
+  const totalCollectedFromBills = paidBills.reduce((sum: number, bill: any) => sum + Number(bill.total), 0);
+  const totalCollectedFromRegs = registrations.reduce((sum, reg) => sum + Number(reg.amount), 0);
+
   return (
     <PageLayout>
       <div className="container py-8">
@@ -277,24 +324,52 @@ export default function Billing() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Select Counters (Multi-select)</Label>
-                    <div className="flex flex-wrap gap-2 p-3 border border-input rounded-md bg-background min-h-[60px]">
-                      {stalls.map(s => (
-                        <Button
-                          key={s.id}
-                          variant={selectedStalls.includes(s.id) ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => toggleStallSelection(s.id)}
-                        >
-                          {s.counter_name}
-                        </Button>
-                      ))}
+                    <Label>Select Counters</Label>
+                    <div className="relative" ref={dropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                        className="w-full flex items-center justify-between px-3 py-2 border border-input rounded-md bg-background hover:bg-accent/50 transition-colors min-h-[42px]"
+                      >
+                        <div className="flex flex-wrap gap-1 flex-1">
+                          {selectedStalls.length === 0 ? (
+                            <span className="text-muted-foreground">Select counters...</span>
+                          ) : (
+                            selectedStalls.map(id => (
+                              <Badge key={id} variant="secondary" className="flex items-center gap-1">
+                                {getStallName(id)}
+                                <X 
+                                  className="h-3 w-3 cursor-pointer hover:text-destructive" 
+                                  onClick={(e) => { e.stopPropagation(); removeStall(id); }}
+                                />
+                              </Badge>
+                            ))
+                          )}
+                        </div>
+                        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      
+                      {isDropdownOpen && (
+                        <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {stalls.length === 0 ? (
+                            <div className="p-3 text-muted-foreground text-sm">No counters available</div>
+                          ) : (
+                            stalls.map(stall => (
+                              <div
+                                key={stall.id}
+                                onClick={() => toggleStallSelection(stall.id)}
+                                className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-accent transition-colors"
+                              >
+                                <div className={`h-4 w-4 border rounded flex items-center justify-center ${selectedStalls.includes(stall.id) ? 'bg-primary border-primary' : 'border-input'}`}>
+                                  {selectedStalls.includes(stall.id) && <Check className="h-3 w-3 text-primary-foreground" />}
+                                </div>
+                                <span className="text-foreground">{stall.counter_name}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {selectedStalls.length > 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        {selectedStalls.length} counter(s) selected
-                      </p>
-                    )}
                   </div>
 
                   {selectedStalls.length > 0 && stallProducts.length > 0 && (
@@ -403,10 +478,15 @@ export default function Billing() {
                             <span className="font-semibold text-foreground">
                               {bill.stalls?.counter_name || getStallName(bill.stall_id)}
                             </span>
-                            <Badge variant="secondary">{formatDate(bill.created_at)}</Badge>
+                            <Badge variant={bill.status === 'paid' ? 'default' : 'secondary'}>
+                              {bill.status === 'paid' ? 'Paid' : 'Pending'}
+                            </Badge>
                           </div>
                           <p className="text-sm text-muted-foreground">
                             {bill.receipt_number}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDate(bill.created_at)}
                           </p>
                           <p className="text-lg font-bold text-primary mt-1">₹{bill.total}</p>
                         </div>
@@ -419,23 +499,59 @@ export default function Billing() {
           </TabsContent>
 
           <TabsContent value="receipts">
+            <div className="mb-6">
+              <Card className="bg-gradient-to-r from-primary/10 to-secondary/10">
+                <CardContent className="py-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Total Collected</p>
+                      <p className="text-3xl font-bold text-primary">₹{totalCollectedFromBills + totalCollectedFromRegs}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-muted-foreground">From Bills: ₹{totalCollectedFromBills}</p>
+                      <p className="text-sm text-muted-foreground">From Registrations: ₹{totalCollectedFromRegs}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
             <div className="grid md:grid-cols-2 gap-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Cash Receipts from Billing</CardTitle>
+                  <CardTitle className="flex items-center justify-between">
+                    <span>Pending Bills</span>
+                    <Badge variant="secondary">{pendingBills.length}</Badge>
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {bills.length === 0 ? (
-                    <p className="text-muted-foreground text-center py-8">No billing receipts</p>
+                  {pendingBills.length === 0 ? (
+                    <p className="text-muted-foreground text-center py-8">No pending bills</p>
                   ) : (
                     <div className="space-y-3">
-                      {bills.map((bill: any) => (
-                        <div key={bill.id} className="p-3 border border-border rounded-lg flex items-center justify-between">
-                          <div>
-                            <p className="font-medium">{bill.stalls?.counter_name || 'Unknown'}</p>
-                            <p className="text-xs text-muted-foreground">{formatDate(bill.created_at)}</p>
+                      {pendingBills.map((bill: any) => (
+                        <div key={bill.id} className="p-3 border border-border rounded-lg">
+                          <div className="flex items-center justify-between mb-2">
+                            <div>
+                              <p className="font-medium">{bill.stalls?.counter_name || 'Unknown'}</p>
+                              <p className="text-xs text-muted-foreground">{bill.receipt_number}</p>
+                              <p className="text-xs text-muted-foreground">{formatDate(bill.created_at)}</p>
+                            </div>
+                            <span className="font-bold text-lg text-primary">₹{bill.total}</span>
                           </div>
-                          <span className="font-bold text-success">₹{bill.total}</span>
+                          <Button 
+                            size="sm" 
+                            className="w-full mt-2"
+                            onClick={() => markPaidMutation.mutate(bill.id)}
+                            disabled={markPaidMutation.isPending}
+                          >
+                            {markPaidMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Check className="h-4 w-4 mr-2" />
+                            )}
+                            Cash Received
+                          </Button>
                         </div>
                       ))}
                     </div>
@@ -445,22 +561,27 @@ export default function Billing() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Cash Receipts from Registrations</CardTitle>
+                  <CardTitle className="flex items-center justify-between">
+                    <span>Paid Bills</span>
+                    <Badge variant="default">{paidBills.length}</Badge>
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {registrations.length === 0 ? (
-                    <p className="text-muted-foreground text-center py-8">No registration receipts</p>
+                  {paidBills.length === 0 ? (
+                    <p className="text-muted-foreground text-center py-8">No paid bills yet</p>
                   ) : (
                     <div className="space-y-3">
-                      {registrations.map((reg) => (
-                        <div key={reg.id} className="p-3 border border-border rounded-lg flex items-center justify-between">
+                      {paidBills.map((bill: any) => (
+                        <div key={bill.id} className="p-3 border border-border rounded-lg flex items-center justify-between bg-primary/5">
                           <div>
-                            <p className="font-medium">{reg.name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {getRegTypeLabel(reg.registration_type)} - {formatDate(reg.created_at)}
-                            </p>
+                            <p className="font-medium">{bill.stalls?.counter_name || 'Unknown'}</p>
+                            <p className="text-xs text-muted-foreground">{bill.receipt_number}</p>
+                            <p className="text-xs text-muted-foreground">{formatDate(bill.created_at)}</p>
                           </div>
-                          <span className="font-bold text-success">₹{reg.amount}</span>
+                          <div className="text-right">
+                            <span className="font-bold text-lg text-green-600">₹{bill.total}</span>
+                            <Badge variant="default" className="ml-2">Paid</Badge>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -468,6 +589,31 @@ export default function Billing() {
                 </CardContent>
               </Card>
             </div>
+
+            <Card className="mt-6">
+              <CardHeader>
+                <CardTitle>Registration Receipts</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {registrations.length === 0 ? (
+                  <p className="text-muted-foreground text-center py-8">No registration receipts</p>
+                ) : (
+                  <div className="space-y-3">
+                    {registrations.map((reg) => (
+                      <div key={reg.id} className="p-3 border border-border rounded-lg flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{reg.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {getRegTypeLabel(reg.registration_type)} - {formatDate(reg.created_at)}
+                          </p>
+                        </div>
+                        <span className="font-bold text-green-600">₹{reg.amount}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="registrations">
@@ -479,64 +625,70 @@ export default function Billing() {
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label>Registration Type</Label>
-                    <select
-                      value={registration.type}
-                      onChange={(e) => setRegistration({ 
-                        ...registration, 
-                        type: e.target.value as Enums<"registration_type">
-                      })}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    >
-                      <option value="stall_counter">Stall Counter Registration</option>
-                      <option value="employment_booking">Employment Booking</option>
-                      <option value="employment_registration">Employment Registration</option>
-                    </select>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { value: 'stall_counter', label: 'Stall Counter', icon: Receipt },
+                        { value: 'employment_booking', label: 'Employment Booking', icon: UserPlus },
+                        { value: 'employment_registration', label: 'Employment Reg.', icon: UserPlus }
+                      ].map(({ value, label, icon: Icon }) => (
+                        <Button
+                          key={value}
+                          variant={registration.type === value ? "default" : "outline"}
+                          className="flex flex-col h-auto py-3"
+                          onClick={() => setRegistration(prev => ({ ...prev, type: value as Enums<"registration_type"> }))}
+                        >
+                          <Icon className="h-5 w-5 mb-1" />
+                          <span className="text-xs text-center">{label}</span>
+                        </Button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="space-y-2">
-                    <Label>Name *</Label>
+                    <Label htmlFor="reg-name">Name *</Label>
                     <Input
+                      id="reg-name"
                       value={registration.name}
-                      onChange={(e) => setRegistration({ ...registration, name: e.target.value })}
-                      placeholder={registration.type === "stall_counter" ? "Counter Name" : "Applicant Name"}
+                      onChange={(e) => setRegistration(prev => ({ ...prev, name: e.target.value }))}
+                      placeholder="Enter name"
                     />
                   </div>
 
-                  {registration.type === "employment_booking" && (
-                    <div className="space-y-2">
-                      <Label>Category</Label>
-                      <Input
-                        value={registration.category}
-                        onChange={(e) => setRegistration({ ...registration, category: e.target.value })}
-                        placeholder="Enter category"
-                      />
-                    </div>
-                  )}
+                  <div className="space-y-2">
+                    <Label htmlFor="reg-category">Category</Label>
+                    <Input
+                      id="reg-category"
+                      value={registration.category}
+                      onChange={(e) => setRegistration(prev => ({ ...prev, category: e.target.value }))}
+                      placeholder="Enter category"
+                    />
+                  </div>
 
                   <div className="space-y-2">
-                    <Label>Mobile Number</Label>
+                    <Label htmlFor="reg-mobile">Mobile</Label>
                     <Input
+                      id="reg-mobile"
                       value={registration.mobile}
-                      onChange={(e) => setRegistration({ ...registration, mobile: e.target.value })}
+                      onChange={(e) => setRegistration(prev => ({ ...prev, mobile: e.target.value }))}
                       placeholder="Enter mobile number"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label>
-                      {registration.type === "stall_counter" ? "Registration Fee" : "Amount"} (₹) *
-                    </Label>
+                    <Label htmlFor="reg-amount">Amount *</Label>
                     <Input
+                      id="reg-amount"
                       type="number"
                       value={registration.amount}
-                      onChange={(e) => setRegistration({ ...registration, amount: e.target.value })}
+                      onChange={(e) => setRegistration(prev => ({ ...prev, amount: e.target.value }))}
                       placeholder="Enter amount"
                     />
                   </div>
 
                   <Button 
                     onClick={handleRegistration} 
-                    className="w-full"
+                    className="w-full" 
+                    size="lg"
                     disabled={createRegMutation.isPending}
                   >
                     {createRegMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
@@ -558,30 +710,23 @@ export default function Billing() {
                   ) : registrations.length === 0 ? (
                     <p className="text-muted-foreground text-center py-8">No registrations yet</p>
                   ) : (
-                    <div className="space-y-3">
-                      {registrations.map((reg) => (
+                    <div className="space-y-4">
+                      {registrations.slice(0, 10).map((reg) => (
                         <div key={reg.id} className="p-4 border border-border rounded-lg">
-                          <div className="flex items-start justify-between">
-                            <div className="flex items-center gap-3">
-                              <div className={`h-10 w-10 rounded-xl flex items-center justify-center ${
-                                reg.registration_type === "stall_counter" ? "bg-warning/10" : "bg-info/10"
-                              }`}>
-                                {reg.registration_type === "stall_counter" ? (
-                                  <CreditCard className="h-5 w-5 text-warning" />
-                                ) : (
-                                  <Briefcase className="h-5 w-5 text-info" />
-                                )}
-                              </div>
-                              <div>
-                                <p className="font-semibold text-foreground">{reg.name}</p>
-                                <p className="text-sm text-muted-foreground">{getRegTypeLabel(reg.registration_type)}</p>
-                              </div>
-                            </div>
-                            <Badge variant="outline">₹{reg.amount}</Badge>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-semibold text-foreground">{reg.name}</span>
+                            <Badge variant="outline">{getRegTypeLabel(reg.registration_type)}</Badge>
                           </div>
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            {reg.mobile && <span>Mobile: {reg.mobile} | </span>}
-                            <span>{formatDate(reg.created_at)}</span>
+                          {reg.category && (
+                            <p className="text-sm text-muted-foreground">Category: {reg.category}</p>
+                          )}
+                          {reg.mobile && (
+                            <p className="text-sm text-muted-foreground">Mobile: {reg.mobile}</p>
+                          )}
+                          <p className="text-sm text-muted-foreground">{reg.receipt_number}</p>
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-xs text-muted-foreground">{formatDate(reg.created_at)}</span>
+                            <span className="text-lg font-bold text-primary">₹{reg.amount}</span>
                           </div>
                         </div>
                       ))}
